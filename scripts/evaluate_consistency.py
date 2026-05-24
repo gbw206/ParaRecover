@@ -1,7 +1,6 @@
 """
 Compute human-model consistency metrics:
 - Exact Match Accuracy
-- Weighted Kappa
 - MAE
 - Confusion Matrix
 - Error Distribution
@@ -12,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import cohen_kappa_score, mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from scipy.stats import spearmanr, pearsonr
 
 DIMENSION_GROUPS = {
@@ -21,19 +20,6 @@ DIMENSION_GROUPS = {
     "struct": ["S1", "S2", "S3", "S4"],
 }
 LABEL_ORDER = [0.0, 0.5, 1.0]
-
-
-def safe_weighted_kappa(y_true, y_pred, weights="linear"):
-    if len(y_true) == 0:
-        return np.nan
-    y_true = [int(x) for x in y_true]
-    y_pred = [int(x) for x in y_pred]
-    unique_values = sorted(set(y_true) | set(y_pred))
-    kappa = cohen_kappa_score(y_true, y_pred, labels=unique_values, weights=weights)
-    if np.isnan(kappa):
-        if np.array_equal(np.array(y_true), np.array(y_pred)):
-            return 1.0
-    return kappa
 
 
 def safe_corr(x, y, method="spearman"):
@@ -76,7 +62,7 @@ def main():
                     "Dimension": dim,
                     "N": len(sub),
                     "Exact Match Acc": np.mean(y_true == y_pred),
-                    "Weighted Kappa": safe_weighted_kappa(y_true, y_pred),
+            
                     "MAE": mean_absolute_error(y_true, y_pred),
                     "Human Mean": np.mean(y_true),
                     "Model Mean": np.mean(y_pred),

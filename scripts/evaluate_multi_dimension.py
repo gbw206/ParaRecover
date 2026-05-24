@@ -28,11 +28,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SCORE_DIMS = ["S1", "S2", "S3", "S4", "S5", "D1", "D2", "D3", "D4", "D5", "E1", "E2", "E3", "E4", "E5"]
+SCORE_DIMS = ["S1", "S2", "S3", "S4", "S5", "D1", "D2", "D3", "D4", "D5", "E1", "E2", "E3", "E4"]
 
-STRICT_COMMON_HEADER = """
+HEADER = """
 ## Role
-You are a very strict, conservative, and fine-grained replanner decision evaluation expert.
+You are a very strict and fine-grained replanner decision evaluation expert.
 
 ## General Requirements
 You need to evaluate whether the given replanner's thought and replan DAG are truly high quality.
@@ -62,22 +62,51 @@ You must default to strict scoring, not default to medium or high scores.
 
 def build_diagnostic_prompt(item: dict) -> str:
     return textwrap.dedent(
-        STRICT_COMMON_HEADER
+        HEADER
         + """
-## Evaluation Dimension: diagnostic
+## Evaluation Dimension: Diagnostic
 Please strictly evaluate the following 5 sub-items from the "Diagnostic Quality" perspective:
 
 - D1 Plan Evidence Anchoring: Does the thought clearly reference and correctly understand specific nodes, dependencies, statuses, or steps from the previous plan?
+  - 1: Clearly references verifiable node or dependency information, such as node IDs, upstream/downstream nodes, or status values, and analyzes the problem based on them.
+  - 0.5: Contains some references, but does not pinpoint verifiable node IDs / dependencies / statuses, or the evidence is not precise enough.
+  - 0: Barely draws on plan evidence; merely paraphrases in general terms.
+
 - D2 Tool Evidence Anchoring: Does the thought clearly reference and correctly understand specific errors, return values, parameter names, or tool behaviors from the tool_result?
+  - 1: Accurately identifies the specific tool name, parameter name, error field, or return value, and explains its significance.
+  - 0.5: Knows the tool encountered an issue, but does not cite specific parameter names / error fields, or the evidence citation is incomplete.
+  - 0: Does not ground the analysis in concrete tool results, or clearly misinterprets them.
+
 - D3 Root Cause Localization Precision: Does it locate the true root cause rather than just describing surface symptoms?
+  - 1: Not only points out the failure symptom but also clearly identifies the specific root cause, such as an incorrect parameter name, wrong dependency, or erroneous status progression.
+  - 0.5: Has a general sense of where the problem lies, but stays at a superficial level such as "a step failed" or "parameters need fixing."
+  - 0: The root cause judgment is wrong, or there is no localization at all.
+
 - D4 Impact Scope Identification: Does it identify downstream nodes, dependency chains, status progressions, or response generation affected by the error?
+  - 1: Clearly identifies at least one concretely affected downstream node, dependency chain, or response progression issue.
+  - 0.5: Knows there is an impact, but does not specify the affected nodes, or the scope identification is incomplete.
+  - 0: Fails to identify any impact scope.
+
 - D5 Evidence Sufficiency and Restraint: Does it provide sufficient evidence without fabricating information not present in the input?
+  - 1: Relies on at least two independent, verifiable types of evidence (e.g., citing both the plan and the tool_result); proactively points out at least one remaining flaw or risk; and distinguishes the true root cause from plausible but incorrect explanations.
+  - 0.5: Meets some of the criteria, but falls noticeably short on at least one of: evidence sufficiency, pseudo-root-cause rejection, or residual risk discovery.
+  - 0: The rationale is weak, contains clear conjecture or fabrication, or shows no rigorous scrutiny awareness at all.
 
 ## Output Format
-Output only a JSON object:
+Output only a JSON object, with no additional content:
 ```json
-{{"D1_score": "1/0.5/0", "D1_reason": "...", "D2_score": "1/0.5/0", "D2_reason": "...", "D3_score": "1/0.5/0", "D3_reason": "...", "D4_score": "1/0.5/0", "D4_reason": "...", "D5_score": "1/0.5/0", "D5_reason": "...", "dimension_score": "1/0.5/0", "dimension_summary": "..."}}
-```
+{{
+  "D1_score": "1 / 0.5 / 0",
+  "D1_reason": "Reason for this score",
+  "D2_score": "1 / 0.5 / 0",
+  "D2_reason": "Reason for this score",
+  "D3_score": "1 / 0.5 / 0",
+  "D3_reason": "Reason for this score",
+  "D4_score": "1 / 0.5 / 0",
+  "D4_reason": "Reason for this score",
+  "D5_score": "1 / 0.5 / 0",
+  "D5_reason": "Reason for this score",
+}}
 """
     ).strip().format(
         query=item["query"], tool_list=item["tool_list"],
@@ -88,22 +117,44 @@ Output only a JSON object:
 
 def build_evolutionary_prompt(item: dict) -> str:
     return textwrap.dedent(
-        STRICT_COMMON_HEADER
+        HEADER
         + """
-## Evaluation Dimension: evolutionary
-Please strictly evaluate the following 5 sub-items from the "Fix and Improvement Strategy Quality" perspective:
+## Evaluation Dimension: Evolutionary
+Please strictly evaluate the following 4 sub-items from the "Fix and Improvement Strategy Quality" perspective:
 
 - E1 Change Minimality: Does the replan only modify necessary parts, without irrelevant rewrites?
+  - 1: Modifies only the necessary nodes and dependencies, and these changes are clearly traceable to specific error points.
+  - 0.5: Generally moves in the right direction, but only makes broad-brush fixes, or there are redundant changes, excessive rewrites, or insufficient justification.
+  - 0: Changes are clearly out of control, or barely address the critical issues.
+
 - E2 Fix Closure: Does it not only fix the current error point but also address related downstream nodes, parameters, statuses, or response chains?
+  - 1: The fix forms a complete closure and explicitly handles the affected downstream nodes, parameters, or statuses.
+  - 0.5: Fixes part of the problem, but there are still gaps in the downstream chain, status progression, or response chain.
+  - 0: Does not form an executable closure.
+
 - E3 Goal Preservation: Does the new plan remain faithfully aligned with the original user task, without deviation, reduction, or missing key objectives?
+  - 1: Fully preserves the original task objectives and retains the convergence path needed for the final response.
+  - 0.5: Largely maintains alignment, but has incomplete goal coverage, slight deviation, or fails to guarantee the final response closure after the fix.
+  - 0: Clearly deviates from or omits key objectives.
+
 - E4 Strategy Necessity: Do added steps, deleted steps, or reordered dependencies all have clear justification?
-- E5 Problem-Solving Effectiveness: If executed, is the replan likely to actually resolve the core issues identified?
+  - 1: Every strategic adjustment has sufficient justification.
+  - 0.5: Some adjustments are reasonable, but one or two lack sufficient necessity.
+  - 0: Critical adjustments lack necessity, resembling mechanical rewrites.
 
 ## Output Format
-Output only a JSON object:
+Output only a JSON object, with no additional content:
 ```json
-{{"E1_score": "1/0.5/0", "E1_reason": "...", "E2_score": "1/0.5/0", "E2_reason": "...", "E3_score": "1/0.5/0", "E3_reason": "...", "E4_score": "1/0.5/0", "E4_reason": "...", "E5_score": "1/0.5/0", "E5_reason": "...", "dimension_score": "1/0.5/0", "dimension_summary": "..."}}
-```
+{{
+  "E1_score": "1 / 0.5 / 0",
+  "E1_reason": "Reason for this score",
+  "E2_score": "1 / 0.5 / 0",
+  "E2_reason": "Reason for this score",
+  "E3_score": "1 / 0.5 / 0",
+  "E3_reason": "Reason for this score",
+  "E4_score": "1 / 0.5 / 0",
+  "E4_reason": "Reason for this score",
+}}
 """
     ).strip().format(
         query=item["query"], tool_list=item["tool_list"],
@@ -114,21 +165,49 @@ Output only a JSON object:
 
 def build_structural_prompt(item: dict) -> str:
     return textwrap.dedent(
-        STRICT_COMMON_HEADER
+        HEADER
         + """
-## Evaluation Dimension: structural
-Please strictly evaluate the following 4 sub-items judged by LLM (S5 is automatically filled by the program):
+## Evaluation Dimension: Structural
+Please strictly evaluate the following 4 sub-items judged by the LLM. An additional programmatic check (S5) is automatically filled by the script:
 
 - S1 thought-DAG Consistency: Are the actions, fixes, and progressions claimed in the thought actually reflected in the replan DAG?
-- S2 Topological Dependency and Overall Executability: Are node dependencies, ordering, and upstream/downstream relationships correct?
+  - 1: The key fix actions, downstream handling, and DAG nodes in the thought all correspond one-to-one.
+  - 0.5: Partially consistent, but there are omissions, misalignments, or claims made in the thought that are not reflected in the DAG.
+  - 0: Clearly inconsistent.
+
+- S2 Topological Dependency and Overall Executability: Are node dependencies, ordering, and upstream/downstream relationships correct? Does the overall structure resemble a truly executable DAG?
+  - 1: Dependencies are correct and reasonable; the overall structure is highly executable.
+  - 0.5: Has minor dependency issues or execution risks, but the main chain is generally understandable.
+  - 0: Dependencies are clearly wrong, or the overall structure is difficult to execute.
+
 - S3 Tool Call Legality: Do tool names, parameter names, and parameter value formats strictly conform to the tool list constraints?
-- S4 Status Progression Correctness: Are the statuses of executed nodes, unexecuted nodes, failure-retained nodes, and response node reasonable?
+  - 1: Tool names, parameter names, and parameter value formats are all legal and precise.
+  - 0.5: Has minor irregularities or potential risks, but not to the point of being completely unusable.
+  - 0: Contains illegal tools, incorrect parameter names, missing critical parameters, or clearly invalid values.
+
+- S4 Status Progression Correctness: Are the statuses of executed nodes, unexecuted nodes, failure-retained nodes, and response nodes reasonable?
+  - 1: Status annotations are consistent with the current execution reality.
+  - 0.5: Has minor status imprecision.
+  - 0: Statuses are clearly wrong and would mislead the executor.
+
+- S5 Script DAG Legality: This item is not output by the LLM; the program automatically checks whether the replan is parseable, whether all dependency references point to existing nodes, and whether it is acyclic, then outputs 1/0.
+
 
 ## Output Format
-Output only a JSON object:
+Output only a JSON object, with no additional content:
 ```json
-{{"S1_score": "1/0.5/0", "S1_reason": "...", "S2_score": "1/0.5/0", "S2_reason": "...", "S3_score": "1/0.5/0", "S3_reason": "...", "S4_score": "1/0.5/0", "S4_reason": "...", "S5_score": "Auto-filled by program", "S5_reason": "Auto-filled by program", "dimension_score": "1/0.5/0", "dimension_summary": "..."}}
-```
+{{
+  "S1_score": "1 / 0.5 / 0",
+  "S1_reason": "Reason for this score",
+  "S2_score": "1 / 0.5 / 0",
+  "S2_reason": "Reason for this score",
+  "S3_score": "1 / 0.5 / 0",
+  "S3_reason": "Reason for this score",
+  "S4_score": "1 / 0.5 / 0",
+  "S4_reason": "Reason for this score",
+  "S5_score": "Auto-filled by program",
+  "S5_reason": "Auto-filled by program",
+}}
 """
     ).strip().format(
         query=item["query"], tool_list=item["tool_list"],
@@ -323,7 +402,7 @@ def build_requests(rows, dimensions, model_prefix=""):
 def parse_dimension_output(text, prefix):
     parsed = {}
     data = extract_json_object(text)
-    for dim in ["D1", "D2", "D3", "D4", "D5", "E1", "E2", "E3", "E4", "E5", "S1", "S2", "S3", "S4", "S5"]:
+    for dim in ["D1", "D2", "D3", "D4", "D5", "E1", "E2", "E3", "E4", "S1", "S2", "S3", "S4", "S5"]:
         parsed[f"{prefix}_{dim}_score"] = data.get(f"{dim}_score", "")
         parsed[f"{prefix}_{dim}_reason"] = data.get(f"{dim}_reason", "")
     parsed[f"{prefix}_dimension_score"] = data.get("dimension_score", "")
@@ -342,7 +421,7 @@ def main():
 
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
-    model = args.model or os.getenv("OPENAI_MODEL", "deepseek-chat")
+    model = args.model or os.getenv("OPENAI_MODEL", "deepseek-reasoner")
 
     if not api_key:
         raise ValueError("Please set OPENAI_API_KEY environment variable")
