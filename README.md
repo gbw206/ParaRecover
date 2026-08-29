@@ -1,4 +1,4 @@
-# ParaRecover: ParaRecover: A Process-Level Benchmark for Error Localization and Recovery in Parallel Tool-Use Agents
+# ParaRecover: A Process-Level Benchmark for Error Localization and Recovery in Parallel Tool-Use Agents
 
 **ParaRecover** is a benchmark for evaluating the re-planning (recovery) ability of LLM-based agents. It tests whether an agent can detect execution errors, diagnose root causes, and repair its plan accordingly when tool calls fail.
 
